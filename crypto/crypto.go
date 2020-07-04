@@ -1,61 +1,44 @@
 package crypto
 
 import (
-	"crypto/cipher"
+	"errors"
 	"fmt"
 	"math"
 	"math/bits"
 	"sort"
 )
 
-func XOR(buf, x, y []byte) []byte {
+func XOR(dst, x, y []byte) {
 	if len(x) != len(y) {
 		panic(fmt.Sprintf("buffers have different length: len(x) = %d, len(y) = %d", len(x), len(y)))
 	}
-	n := len(x)
-	if cap(buf) < n {
-		buf = make([]byte, n)
-	} else {
-		buf = buf[:n]
+	if len(dst) < len(x) {
+		panic(fmt.Sprintf("dst is too short: len(dst) = %d, len(x) = %d", len(dst), len(x)))
 	}
 	for i := range x {
-		buf[i] = x[i] ^ y[i]
+		dst[i] = x[i] ^ y[i]
 	}
-	return buf
 }
 
-func XORByte(buf, x []byte, y byte) []byte {
-	n := len(x)
-	if cap(buf) < n {
-		buf = make([]byte, n)
-	} else {
-		buf = buf[:n]
+func XORByte(dst, x []byte, y byte) {
+	for i := range x {
+		dst[i] = x[i] ^ y
 	}
-	for i, b := range x {
-		buf[i] = b ^ y
-	}
-	return buf
 }
 
-func XORRepeat(buf, x, y []byte) []byte {
-	n := len(x)
-	if cap(buf) < n {
-		buf = make([]byte, n)
-	} else {
-		buf = buf[:n]
+func XORRepeat(dst, x, y []byte) {
+	for i := range x {
+		dst[i] = x[i] ^ y[i%len(y)]
 	}
-	for i, b := range x {
-		buf[i] = b ^ y[i%len(y)]
-	}
-	return buf
 }
 
 func CrackXORByte(ct []byte) (key byte, score float64, pt []byte) {
+	pt = make([]byte, len(ct))
 	bestScore := math.Inf(1.)
 	var bestKey byte
 	var freqs []float64
 	for key := 0; key < 256; key++ {
-		pt = XORByte(pt, ct, byte(key))
+		XORByte(pt, ct, byte(key))
 		freqs = ByteFrequency(freqs, pt)
 		score := Norm(freqs, EnglishFreqs[:])
 		if score < bestScore {
@@ -63,7 +46,8 @@ func CrackXORByte(ct []byte) (key byte, score float64, pt []byte) {
 			bestKey = byte(key)
 		}
 	}
-	return bestKey, bestScore, XORByte(pt, ct, bestKey)
+	XORByte(pt, ct, bestKey)
+	return bestKey, bestScore, pt
 }
 
 func CrackXORRepeat(ct []byte, minKeySize, maxKeySize int) (key, pt []byte, err error) {
@@ -125,7 +109,8 @@ func CrackXORRepeat(ct []byte, minKeySize, maxKeySize int) (key, pt []byte, err 
 		}
 	}
 
-	pt = XORRepeat(nil, ct, bestKey)
+	pt = make([]byte, len(ct))
+	XORRepeat(pt, ct, bestKey)
 	return bestKey, pt, nil
 }
 
@@ -170,58 +155,52 @@ func HammingDistance(x, y []byte) int {
 	return n
 }
 
-type ecbCrypter struct {
-	blockSize int
-	crypt     func(dst, src []byte)
+func PadLength(srcLen, blockSize int) int {
+	return srcLen + (blockSize - (srcLen % blockSize))
 }
 
-func NewECBEncrypter(c cipher.Block) cipher.BlockMode {
-	return &ecbCrypter{
-		blockSize: c.BlockSize(),
-		crypt:     c.Encrypt,
+// Pad appends src to dst, appends PKCS#7 padding bytes at the end, and returns
+// the resulting slice. The number of bytes appended to dst will be a multiple
+// of blockSize.
+func Pad(dst, src []byte, blockSize int) []byte {
+	b := blockSize - (len(src) % blockSize)
+	padLen := len(src) + b
+	if slicesOverlap(dst, src) && cap(dst) >= padLen {
+		// Optimization: src and dst point to the same buffer, and there's enough
+		// room to append the padding bytes. Skip the copy.
+		dst = dst[:len(dst)+len(src)]
+	} else {
+		buf := make([]byte, 0, len(dst)+padLen)
+		dst = append(buf, dst...)
+		dst = append(dst, src...)
 	}
+	for i := 0; i < b; i++ {
+		dst = append(dst, byte(b))
+	}
+	return dst
 }
 
-func NewECBDecrypter(c cipher.Block) cipher.BlockMode {
-	return &ecbCrypter{
-		blockSize: c.BlockSize(),
-		crypt:     c.Decrypt,
+// Unpad returns a slice of src, removing PKCS#7 padding bytes at the end.
+func Unpad(src []byte) ([]byte, error) {
+	if len(src) == 0 {
+		return nil, errors.New("can't remove padding from empty text")
 	}
-}
-
-func (cr *ecbCrypter) BlockSize() int {
-	return cr.blockSize
-}
-
-func (cr *ecbCrypter) CryptBlocks(dst, src []byte) {
-	if len(dst) < len(src) {
-		panic(fmt.Sprintf("dst is shorter than src: len(dst) = %d, len(src) = %d", dst, src))
+	b := int(src[len(src)-1])
+	if b > len(src) {
+		return nil, errors.New("invalid padding")
 	}
-	n := len(src)
-	bs := cr.blockSize
-	if n%bs != 0 {
-		panic(fmt.Sprintf("src not a multiple of block size: len(src) = %d, block size = %d", n, bs))
-	}
-
-	for i := 0; i < n; i += bs {
-		cr.crypt(dst[i:i+bs], src[i:i+bs])
-	}
-}
-
-func DetectECB(ct []byte) bool {
-	blockSize := 16
-	if len(ct)%blockSize != 0 {
-		panic(fmt.Sprintf("ciphertext length (%d) not a multiple of block size", len(ct)))
-	}
-	blocks := make(map[string]struct{})
-	s := string(ct)
-	for len(s) > 0 {
-		b := s[:blockSize]
-		s = s[blockSize:]
-		if _, ok := blocks[b]; ok {
-			return true
+	unpadLen := len(src) - b
+	for i := unpadLen; i < len(src); i++ {
+		if src[i] != byte(b) {
+			return nil, errors.New("invalid padding")
 		}
-		blocks[b] = struct{}{}
 	}
-	return false
+	return src[:unpadLen], nil
+}
+
+// slicesOverlap returns true if appending src to dst would have no effect.
+// This is true if src and dst point to the same storage, len(dst) is 0,
+// and cap(dst) is at least len(src).
+func slicesOverlap(dst, src []byte) bool {
+	return len(src) > 0 && cap(dst) >= len(src) && &dst[:1][0] == &src[0]
 }

@@ -14,6 +14,7 @@ import (
 	"jayconrod.com/cryptopals/crypto"
 )
 
+// Convert hex to base64.
 func TestSet1Problem1(t *testing.T) {
 	t.Parallel()
 	in := "49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d"
@@ -28,6 +29,7 @@ func TestSet1Problem1(t *testing.T) {
 	}
 }
 
+// Fixed XOR.
 func TestSet1Problem2(t *testing.T) {
 	t.Parallel()
 	a, err := hex.DecodeString("1c0111001f010100061a024b53535009181c")
@@ -38,7 +40,8 @@ func TestSet1Problem2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := crypto.XOR(nil, a, b)
+	c := make([]byte, len(a))
+	crypto.XOR(c, a, b)
 	got := hex.EncodeToString(c)
 	want := "746865206b696420646f6e277420706c6179"
 	if got != want {
@@ -46,6 +49,7 @@ func TestSet1Problem2(t *testing.T) {
 	}
 }
 
+// Single-byte XOR cipher.
 func TestSet1Problem3(t *testing.T) {
 	t.Parallel()
 	ct, err := hex.DecodeString("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736")
@@ -60,6 +64,7 @@ func TestSet1Problem3(t *testing.T) {
 	}
 }
 
+// Detect single-character XOR.
 func TestSet1Problem4(t *testing.T) {
 	t.Parallel()
 	data := readFile(t, filepath.Join("testdata/s1/p4.txt"))
@@ -83,12 +88,14 @@ func TestSet1Problem4(t *testing.T) {
 	}
 }
 
+// Implement repeating-key XOR.
 func TestSet1Problem5(t *testing.T) {
 	t.Parallel()
 	pt := []byte(`Burning 'em, if you ain't quick and nimble
 I go crazy when I hear a cymbal`)
 	key := []byte("ICE")
-	ct := crypto.XORRepeat(nil, pt, key)
+	ct := make([]byte, len(pt))
+	crypto.XORRepeat(ct, pt, key)
 	got := hex.EncodeToString(ct)
 	want := "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
 	if got != want {
@@ -96,6 +103,7 @@ I go crazy when I hear a cymbal`)
 	}
 }
 
+// Break repeating-key XOR.
 func TestSet1Problem6(t *testing.T) {
 	t.Parallel()
 	ct := readBase64File(t, filepath.FromSlash("testdata/s1/p6.txt"))
@@ -109,6 +117,7 @@ func TestSet1Problem6(t *testing.T) {
 	}
 }
 
+// AES in ECB mode.
 func TestSet1Problem7(t *testing.T) {
 	t.Parallel()
 	key := []byte(`YELLOW SUBMARINE`)
@@ -127,6 +136,7 @@ func TestSet1Problem7(t *testing.T) {
 	}
 }
 
+// Detect AES in ECB mode.
 func TestSet1Problem8(t *testing.T) {
 	t.Parallel()
 	data, err := ioutil.ReadFile(filepath.FromSlash("testdata/s1/p8.txt"))
