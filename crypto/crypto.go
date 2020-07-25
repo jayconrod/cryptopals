@@ -165,15 +165,21 @@ func PadLength(srcLen, blockSize int) int {
 func Pad(dst, src []byte, blockSize int) []byte {
 	b := blockSize - (len(src) % blockSize)
 	padLen := len(src) + b
-	if slicesOverlap(dst, src) && cap(dst) >= padLen {
-		// Optimization: src and dst point to the same buffer, and there's enough
-		// room to append the padding bytes. Skip the copy.
+	if cap(dst) >= len(dst)+padLen &&
+		(len(src) == 0 || &dst[:len(dst)+1][len(dst)] == &src[0]) {
+		// src is right after dst in the same storage, and there's enough room to
+		// append the padding bytes without reallocating. Just increase len(dst).
 		dst = dst[:len(dst)+len(src)]
+	} else if cap(dst) >= len(dst)+padLen {
+		// dst has enough room to contain everything. Don't reallocate.
+		dst = append(dst, src...)
 	} else {
+		// dst is too short. Reallocate and copy both dst and src.
 		buf := make([]byte, 0, len(dst)+padLen)
 		dst = append(buf, dst...)
 		dst = append(dst, src...)
 	}
+
 	for i := 0; i < b; i++ {
 		dst = append(dst, byte(b))
 	}
@@ -186,7 +192,7 @@ func Unpad(src []byte) ([]byte, error) {
 		return nil, errors.New("can't remove padding from empty text")
 	}
 	b := int(src[len(src)-1])
-	if b > len(src) {
+	if b == 0 || b > len(src) {
 		return nil, errors.New("invalid padding")
 	}
 	unpadLen := len(src) - b
