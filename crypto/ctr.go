@@ -3,17 +3,29 @@ package crypto
 import (
 	"crypto/cipher"
 	"fmt"
+	"math"
 	"unsafe"
 )
 
-type ctrStream struct {
-	block   cipher.Block
-	in, out []byte
-	n       *uint64
-	off     int
+type CTRStream struct {
+	block cipher.Block
+
+	// in is the next block that, when encrypted, becomes the keystream.
+	// It is initialized with iv and is incremented for each block.
+	in []byte
+
+	// low and high are pointers to 64-bit words of in. They are used to
+	// increment in, which is effectively a 128-bit integer.
+	low, high *uint64
+
+	// out is the next keystream block.
+	out []byte
+
+	// off is the number of bytes in out that have been consumed.
+	off int
 }
 
-func NewCTR(block cipher.Block, iv []byte) cipher.Stream {
+func NewCTR(block cipher.Block, iv []byte) *CTRStream {
 	bs := block.BlockSize()
 	if bs != 16 {
 		panic(fmt.Sprintf("block.BlockSize() is %d; must be 16", bs))
@@ -21,23 +33,30 @@ func NewCTR(block cipher.Block, iv []byte) cipher.Stream {
 	if len(iv) != bs {
 		panic(fmt.Sprintf("len(iv) is %d; must be %d", len(iv), bs))
 	}
-	cs := &ctrStream{
+	in := make([]byte, bs)
+	copy(in, iv)
+	cs := &CTRStream{
 		block: block,
-		in:    iv,
+		in:    in,
+		low:   (*uint64)(unsafe.Pointer(&in[8])),
+		high:  (*uint64)(unsafe.Pointer(&in[0])),
 		out:   make([]byte, bs),
-		n:     (*uint64)(unsafe.Pointer(&iv[8])),
+		off:   0,
 	}
-	cs.next()
+	cs.block.Encrypt(cs.out, cs.in)
 	return cs
 }
 
-func (cs *ctrStream) XORKeyStream(dst, src []byte) {
+func (cs *CTRStream) XORKeyStream(dst, src []byte) {
 	if len(dst) < len(src) {
 		panic(fmt.Sprintf("len(dst) (%d) less than len(src) (%d)", len(dst), len(src)))
 	}
 
 	bs := len(cs.in)
 	for len(src) > 0 {
+		if cs.off == bs {
+			cs.next()
+		}
 		n := bs - cs.off
 		if len(src) < n {
 			n = len(src)
@@ -46,14 +65,37 @@ func (cs *ctrStream) XORKeyStream(dst, src []byte) {
 		dst = dst[n:]
 		src = src[n:]
 		cs.off += n
-		if cs.off == bs {
-			cs.next()
-		}
 	}
 }
 
-func (cs *ctrStream) next() {
+func (cs *CTRStream) Seek(offset int) {
+	if offset < 0 {
+		panic(fmt.Sprintf("cannot seek backward with offset %d", offset))
+	}
+	bs := len(cs.in)
+	if offset <= bs-cs.off {
+		cs.off += offset
+		return
+	}
+	if cs.off > 0 {
+		offset -= bs - cs.off
+		cs.add(1)
+		cs.off = 0
+	}
+	cs.add(uint64(offset / bs))
+	cs.off = offset % bs
 	cs.block.Encrypt(cs.out, cs.in)
-	(*cs.n)++
+}
+
+func (cs *CTRStream) next() {
+	cs.add(1)
 	cs.off = 0
+	cs.block.Encrypt(cs.out, cs.in)
+}
+
+func (cs *CTRStream) add(n uint64) {
+	if n > math.MaxUint64-*cs.low {
+		*cs.high++
+	}
+	*cs.low += n
 }
