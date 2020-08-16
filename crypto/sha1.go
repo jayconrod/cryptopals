@@ -1,7 +1,14 @@
+// Copyright 2009 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Copied from crypto/sha1.
+
 package crypto
 
 import (
 	"encoding/binary"
+	"hash"
 )
 
 // The size of a SHA-1 checksum in bytes.
@@ -22,7 +29,7 @@ const (
 // SHA1 represents the partial evaluation of a checksum.
 type SHA1 struct {
 	H   [5]uint32
-	X   [SHA1Chunk]byte
+	X   [SHA1BlockSize]byte
 	NX  int
 	Len uint64
 }
@@ -67,10 +74,42 @@ func (d *SHA1) Reset() {
 	d.Len = 0
 }
 
-// New returns a new hash.Hash computing the SHA1 checksum. The Hash also
+// Get returns the state of d. Like Sum but does not append padding first.
+// May only be called on a 64-byte boundary.
+func (d *SHA1) Get() (uint64, [20]byte) {
+	if d.NX != 0 {
+		panic("d.NX != 0")
+	}
+
+	var h [SHA1Size]byte
+	binary.BigEndian.PutUint32(h[0:], d.H[0])
+	binary.BigEndian.PutUint32(h[4:], d.H[1])
+	binary.BigEndian.PutUint32(h[8:], d.H[2])
+	binary.BigEndian.PutUint32(h[12:], d.H[3])
+	binary.BigEndian.PutUint32(h[16:], d.H[4])
+	return d.Len, h
+}
+
+// Set sets the state of d.
+func (d *SHA1) Set(n uint64, h [20]byte) {
+	d.H = [5]uint32{
+		binary.BigEndian.Uint32(h[0:4]),
+		binary.BigEndian.Uint32(h[4:8]),
+		binary.BigEndian.Uint32(h[8:12]),
+		binary.BigEndian.Uint32(h[12:16]),
+		binary.BigEndian.Uint32(h[16:20]),
+	}
+	if n%64 != 0 {
+		panic("n % 64 != 0")
+	}
+	d.Len = n
+	d.NX = 0
+}
+
+// NewSHA1 returns a new hash.Hash computing the SHA1 checksum. The Hash also
 // implements encoding.BinaryMarshaler and encoding.BinaryUnmarshaler to
 // marshal and unmarshal the internal state of the hash.
-func New() *SHA1 {
+func NewSHA1() *SHA1 {
 	d := new(SHA1)
 	d.Reset()
 	return d
@@ -146,5 +185,14 @@ func SHA1Sum(data []byte) [SHA1Size]byte {
 	var d SHA1
 	d.Reset()
 	d.Write(data)
-	return d.checkSum()
+	h := d.checkSum()
+	return h
+}
+
+func HMACSHA1(key, data []byte) [SHA1Size]byte {
+	hmac := NewHMAC(func() hash.Hash { return NewSHA1() }, key)
+	hmac.Write(data)
+	var tag [SHA1Size]byte
+	hmac.Sum(tag[:0])
+	return tag
 }

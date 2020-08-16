@@ -3,12 +3,18 @@ package main
 import (
 	"bytes"
 	"crypto/aes"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 
 	"jayconrod.com/cryptopals/crypto"
@@ -169,4 +175,241 @@ func TestSet4Problem28(t *testing.T) {
 	if !bytes.Equal(stdSum[:], customSum[:]) {
 		t.Fatal("custom implementation produces wrong sum")
 	}
+}
+
+func TestSet4Problem29(t *testing.T) {
+	msg := []byte("comment1=cooking%20MCs;userdata=foo;comment2=%20like%20a%20pound%20of%20bacon")
+	key := []byte("YELLOW SUBMARINE")
+
+	padLength := func(n uint64) uint64 {
+		return (n + 9 + 63) / 64 * 64
+	}
+
+	makePadding := func(n uint64) []byte {
+		padded := padLength(n)
+		p := int(padded - n)
+		b := make([]byte, p)
+		b[0] = 0x80
+		binary.BigEndian.PutUint64(b[p-8:], n*8)
+		return b
+	}
+
+	want := crypto.SHA1Sum(msg)
+	h := crypto.NewSHA1()
+	h.Write(msg)
+	h.Write(makePadding(uint64(len(msg))))
+	_, got := h.Get()
+	if !bytes.Equal(got[:], want[:]) {
+		t.Fatal("appendPadding does not produce the correct state")
+	}
+
+	prefixMac := func(key, msg []byte) [20]byte {
+		mt := append(key, msg...)
+		return crypto.SHA1Sum(mt)
+	}
+
+	checkPrefixMac := func(key, msg []byte, mac [20]byte) {
+		got := prefixMac(key, msg)
+		if !bytes.Equal(got[:], mac[:]) {
+			t.Fatal("MAC mismatch")
+		}
+	}
+
+	extendPrefixMac := func(keyLen int, msg []byte, mac [20]byte, more []byte) (xmsg []byte, xmac [20]byte) {
+		origLen := keyLen + len(msg)
+		xmsg = append(msg, makePadding(uint64(origLen))...)
+		xmsg = append(xmsg, more...)
+
+		h := crypto.NewSHA1()
+		n := uint64(len(xmsg) - len(more) + keyLen)
+		h.Set(n, mac)
+		h.Write(more)
+		h.Sum(xmac[:0])
+		return xmsg, xmac
+	}
+
+	mac := prefixMac(key, msg)
+	checkPrefixMac(key, msg, mac)
+	xmsg, xmac := extendPrefixMac(len(key), msg, mac, []byte(";admin=true"))
+	checkPrefixMac(key, xmsg, xmac)
+}
+
+func TestSet4Problem30(t *testing.T) {
+	msg := []byte("comment1=cooking%20MCs;userdata=foo;comment2=%20like%20a%20pound%20of%20bacon")
+	key := []byte("YELLOW SUBMARINE")
+
+	padLength := func(n uint64) uint64 {
+		return (n + 9 + crypto.MD4BlockSize - 1) / crypto.MD4BlockSize * crypto.MD4BlockSize
+	}
+
+	makePadding := func(n uint64) []byte {
+		padded := padLength(n)
+		p := int(padded - n)
+		b := make([]byte, p)
+		b[0] = 0x80
+		binary.LittleEndian.PutUint64(b[p-8:], n*8)
+		return b
+	}
+
+	want := crypto.MD4Sum(msg)
+	h := crypto.NewMD4()
+	h.Write(msg)
+	h.Write(makePadding(uint64(len(msg))))
+	_, got := h.Get()
+	if !bytes.Equal(got[:], want[:]) {
+		t.Fatal("appendPadding does not produce the correct state")
+	}
+
+	prefixMac := func(key, msg []byte) [crypto.MD4Size]byte {
+		mt := append(key, msg...)
+		return crypto.MD4Sum(mt)
+	}
+
+	checkPrefixMac := func(key, msg []byte, mac [crypto.MD4Size]byte) {
+		got := prefixMac(key, msg)
+		if !bytes.Equal(got[:], mac[:]) {
+			t.Fatal("MAC mismatch")
+		}
+	}
+
+	extendPrefixMac := func(keyLen int, msg []byte, mac [crypto.MD4Size]byte, more []byte) (xmsg []byte, xmac [crypto.MD4Size]byte) {
+		origLen := keyLen + len(msg)
+		xmsg = append(msg, makePadding(uint64(origLen))...)
+		xmsg = append(xmsg, more...)
+
+		h := crypto.NewMD4()
+		n := uint64(len(xmsg) - len(more) + keyLen)
+		h.Set(n, mac)
+		h.Write(more)
+		h.Sum(xmac[:0])
+		return xmsg, xmac
+	}
+
+	mac := prefixMac(key, msg)
+	checkPrefixMac(key, msg, mac)
+	xmsg, xmac := extendPrefixMac(len(key), msg, mac, []byte(";admin=true"))
+	checkPrefixMac(key, xmsg, xmac)
+}
+
+func TestHMACSHA1(t *testing.T) {
+	data := readBase64File(t, filepath.FromSlash("testdata/s2/p10.txt"))
+	for _, test := range []struct {
+		desc string
+		key  []byte
+	}{
+		{
+			desc: "short_key",
+			key:  []byte("YELLOW SUBMARINE"),
+		},
+		{
+			desc: "long_key",
+			key:  []byte("YELLOW SUBMARINEYELLOW SUBMARINEYELLOW SUBMARINEYELLOW SUBMARINEYELLOW SUBMARINE"),
+		},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			got := crypto.HMACSHA1(test.key, data)
+			var want [crypto.SHA1Size]byte
+			hmac := hmac.New(sha1.New, test.key)
+			hmac.Write(data)
+			hmac.Sum(want[:0])
+			if !bytes.Equal(got[:], want[:]) {
+				t.Errorf("HMAC implementation does not match\n got %s\nwant %s", hex.EncodeToString(got[:]), hex.EncodeToString(want[:]))
+			}
+		})
+	}
+}
+
+func TestSet4Problem31(t *testing.T) {
+	if testing.Short() {
+		t.Skip()
+	}
+
+	// key is shared by the client and server.
+	key := make([]byte, 16)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+
+	// data is sent by the client, together with a MAC. The server verifies the
+	// key was used to generate the MAC.
+	data := make([]byte, 8192)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatal(err)
+	}
+
+	correctTag := crypto.HMACSHA1(key, data)
+
+	// insecureVerifyMAC generates a tag on the given data with the shared key,
+	// then returns whether it matches the given tag. It sleeps for a short time
+	// after each character. I'm too lazy to stand up an HTTP server for this like
+	// the problem asks for, so this is a substitute.
+	insecureVerifyMAC := func(data, tag []byte) bool {
+		for i := 0; i < len(correctTag); i++ {
+			if correctTag[i] != tag[i] {
+				return false
+			}
+			time.Sleep(170 * time.Microsecond)
+		}
+		return true
+	}
+
+	// Determine correctTag, based on timing leaks.
+	var tags [256][crypto.SHA1Size]byte
+	var elapsed [256]time.Duration
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+	for i := 0; i < crypto.SHA1Size; i++ {
+		// Each iteration of the outer loop determines the next byte.
+		for j := 0; j < 256; j++ {
+			// Each iteration of the inner loop tries one value in parallel.
+			// We repeat the evaluation to smooth out scheduling noise.
+			j := j
+			sem <- struct{}{}
+			go func() {
+				begin := time.Now()
+				tags[j][i] = byte(j)
+				for k := 0; k < 3; k++ {
+					insecureVerifyMAC(data, tags[j][:])
+				}
+				elapsed[j] = time.Now().Sub(begin)
+				<-sem
+			}()
+		}
+
+		// Fill the channel to ensure all goroutines finished, then drain it.
+		for j := 0; j < cap(sem); j++ {
+			sem <- struct{}{}
+		}
+		for j := 0; j < cap(sem); j++ {
+			<-sem
+		}
+
+		// The byte that took the longest is the correct one.
+		// Copy it to other buffers.
+		var maxElapsed time.Duration
+		var b byte
+		for j := 0; j < 256; j++ {
+			if elapsed[j] > maxElapsed {
+				maxElapsed = elapsed[j]
+				b = byte(j)
+			}
+		}
+		for j := 0; j < 256; j++ {
+			tags[j][i] = b
+		}
+	}
+	if !bytes.Equal(tags[0][:], correctTag[:]) {
+		t.Fatalf("could not infer MAC from timing\n got %s\nwant %s", hex.EncodeToString(tags[0][:]), hex.EncodeToString(correctTag[:]))
+	}
+}
+
+func TestSet4Problem32(t *testing.T) {
+	// No code here; I just adjusted the code from problem 31.
+	//
+	// 170 us was the lowest I could go without occasionally failing. When
+	// measuring time, I loop over three calls and measure the total duration.
+	//
+	// I'm sure a real network would be noisier than this, so it would be better
+	// to measure durations of several requests and look for statistically
+	// significant differences. More requests may be needed for later bytes, since
+	// the relative timing differences are smaller at the end.
 }
